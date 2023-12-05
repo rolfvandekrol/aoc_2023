@@ -1,6 +1,6 @@
 import { List, Record } from "immutable";
 import { inspect } from "util";
-import {applyUntilSimple, chunk, get, log, mapList, min, readFile, splitAndFilter, tap, toInt} from "../tools";
+import {applyUntilSimple, chunk, get, head, log, mapList, min, readFile, splitAndFilter, tap, toInt} from "../tools";
 
 type MappingProperties = {
   sourceStart: number,
@@ -54,64 +54,70 @@ const rHasOverlap = (a: R, b: R): boolean =>
   a.get('start') < b.get('end') &&
   b.get('start') < a.get('end')
 
+const getRFromMapping = (m: Mapping): R => RFactory({
+  start: m.get('sourceStart'),
+  end: m.get('sourceStart') + m.get('length')
+})
+
+const wrapInArray = <T>(v: T|undefined): T[] => v === undefined ? [] : [v]
+
+const mapRange = (m: Mapping, r: R): R => RFactory({
+  start: r.get('start') - m.get('sourceStart') + m.get('destinationStart'),
+  end: r.get('end') - m.get('sourceStart') + m.get('destinationStart'),
+})
+
 const executeMappingsR = (ranges: List<R>, mappings: List<Mapping>): List<R> =>
   tap(
     mappings.reduce<[List<R>, List<R>]>(
       ([unmapped, mapped], mapping) =>
         tap(
-          RFactory({ start: mapping.get('sourceStart'), end: mapping.get('sourceStart') + mapping.get('length')}),
+          getRFromMapping(mapping),
           mappingR =>
             unmapped.reduce(
               ([mUnmapped, mMapped], r) => tap(
                 getROverlap(r, mappingR),
                 ([rBefore, rOverlap, rAfter]) => [
                   mUnmapped.concat([
-                    ...(rBefore !== undefined ? [rBefore] : []),
-                    ...(rAfter !== undefined ? [rAfter] : [])
+                    ...wrapInArray(rBefore),
+                    ...wrapInArray(rAfter),
                   ]),
-                  rOverlap !== undefined ? mMapped.push(RFactory({
-                    start: rOverlap.get('start') - mapping.get('sourceStart') + mapping.get('destinationStart'),
-                    end: rOverlap.get('end') - mapping.get('sourceStart') + mapping.get('destinationStart'),
-                  })) : mMapped
+                  rOverlap !== undefined ? mMapped.push(mapRange(mapping, rOverlap)) : mMapped
                 ]
               ),
               [List(), mapped]
             ),
         ),
-
       [ranges, List()]
     ),
     ([a, b]) => a.concat(b)
   )
 
-const formatRanges = (rs: List<R>): [number, number][] =>
-  rs.map<[number, number]>(r => [r.get('start'), r.get('end')]).toArray()
+const parseFile = (data: string): [List<R>, List<List<Mapping>>] =>
+  tap(
+    head<string, List<string>>(splitAndFilter("\n\n")(data)),
+    ([seedsInfo, categoryInfo]) => [
+      chunk(splitAndFilter(' ')(get(splitAndFilter(': ')(seedsInfo as string), 1)).map(toInt), 2).map(
+        s => RFactory({
+          start: get(s, 0),
+          end: get(s, 0) + get(s, 1)
+        })
+      ),
+      categoryInfo.map(v => splitAndFilter()(v).rest().map(v => tap(
+        splitAndFilter(' ')(v),
+        v => MappingFactory({
+          destinationStart: toInt(get(v, 0)),
+          sourceStart: toInt(get(v, 1)),
+          length: toInt(get(v, 2))
+        })
+      )))
+    ]
+  )
 
 readFile('./src/05/input')
-  .then(splitAndFilter("\n\n"))
-  .then<[string, List<string>]>(a => [a.first(), a.rest()])
-  .then<[List<R>, List<List<Mapping>>]>(([seedsInfo, categoryInfo]) => [
-    chunk(splitAndFilter(' ')(get(splitAndFilter(': ')(seedsInfo), 1)).map(toInt), 2).map(
-      s => RFactory({
-        start: get(s, 0),
-        end: get(s, 0) + get(s, 1)
-      })
-    ),
-    categoryInfo.map(v => splitAndFilter()(v).rest().map(v => tap(
-      splitAndFilter(' ')(v),
-      v => MappingFactory({
-        destinationStart: toInt(get(v, 0)),
-        sourceStart: toInt(get(v, 1)),
-        length: toInt(get(v, 2))
-      })
-    )))
-  ])
-  // .then(v => log(v, v => formatRanges(v[0])))
-  .then(([seedsRanges, mappings]) => mappings.reduce(
+  .then(parseFile)
+  .then<List<R>>(([seedsRanges, mappings]) => mappings.reduce(
     (r, m) => executeMappingsR(r, m),
     seedsRanges
   ))
-  .then(
-    ranges => min(ranges.map(r => r.get('start')))
-  )
+  .then(ranges => min(ranges.map(r => r.get('start'))))
   .then(log)
